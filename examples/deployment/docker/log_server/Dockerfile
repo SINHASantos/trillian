@@ -1,10 +1,9 @@
-FROM golang:1.17-buster as build
+FROM golang:1.23.4-bookworm@sha256:2e838582004fab0931693a3a84743ceccfbfeeafa8187e87291a1afea457ff7a as build
 
 WORKDIR /trillian
 
 ARG GOFLAGS=""
 ENV GOFLAGS=$GOFLAGS
-ENV GO111MODULE=on
 
 # Download dependencies first - this should be cacheable.
 COPY go.mod go.sum ./
@@ -14,12 +13,12 @@ RUN go mod download
 COPY . .
 
 # Build the server.
-RUN go get ./cmd/trillian_log_server
+RUN go install ./cmd/trillian_log_server
 # Run the licensing tool and save licenses, copyright notices, etc.
-RUN go run github.com/google/go-licenses save ./cmd/trillian_log_server --save_path /THIRD_PARTY_NOTICES
+RUN go run github.com/google/go-licenses/v2 save ./cmd/trillian_log_server --save_path /THIRD_PARTY_NOTICES
 
 # Make a minimal image.
-FROM gcr.io/distroless/base
+FROM gcr.io/distroless/base-debian12@sha256:74ddbf52d93fafbdd21b399271b0b4aac1babf8fa98cab59e5692e01169a1348
 
 COPY --from=build /go/bin/trillian_log_server /
 COPY --from=build /THIRD_PARTY_NOTICES /THIRD_PARTY_NOTICES

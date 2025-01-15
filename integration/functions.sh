@@ -37,10 +37,10 @@ wait_for_server_startup() {
   # as the test will fail if the server is really not up.
   local port=$1
   set +e
-  wget -q --spider --retry-connrefused --waitretry=1 -t 10 localhost:${port}
+  wget -q --spider --retry-connrefused --waitretry=2 -t 20 localhost:${port}
   # Wait a bit more to give it a chance to become actually available, e.g. if CI
   # environment is slow.
-  sleep 2
+  sleep 5
   wget -q --spider -t 1 localhost:${port}
   local rc=$?
   set -e
@@ -127,6 +127,8 @@ log_prep_test() {
     yes | bash "${TRILLIAN_PATH}/scripts/resetdb.sh"
   elif [[ "${TEST_COCKROACHDB_URI}" != "" ]]; then
     yes | bash "${TRILLIAN_PATH}/scripts/resetcrdb.sh"
+  elif [[ "${TEST_POSTGRESQL_URI}" != "" ]]; then
+    yes | bash "${TRILLIAN_PATH}/scripts/resetpgdb.sh"
   fi
 
   local logserver_opts=''
@@ -139,6 +141,9 @@ log_prep_test() {
   elif [[ "${TEST_COCKROACHDB_URI}" != "" ]]; then
     logserver_opts+="--quota_system=crdb --storage_system=crdb --crdb_uri=${TEST_COCKROACHDB_URI}"
     logsigner_opts+="--quota_system=crdb --storage_system=crdb --crdb_uri=${TEST_COCKROACHDB_URI}"
+  elif [[ "${TEST_POSTGRESQL_URI}" != "" ]]; then
+    logserver_opts+="--quota_system=postgresql --storage_system=postgresql --postgresql_uri=${TEST_POSTGRESQL_URI}"
+    logsigner_opts+="--quota_system=postgresql --storage_system=postgresql --postgresql_uri=${TEST_POSTGRESQL_URI}"
   fi
 
   # Start a local etcd instance (if configured).

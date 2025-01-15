@@ -18,7 +18,6 @@ package etcd
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/url"
 	"os"
@@ -45,19 +44,19 @@ const (
 // A temp directory and random ports are used to setup etcd.
 func StartEtcd() (e *embed.Etcd, c *clientv3.Client, cleanup func(), err error) {
 	var dir string
-	dir, err = ioutil.TempDir("", tempDirPrefix)
+	dir, err = os.MkdirTemp("", tempDirPrefix)
 	if err != nil {
 		return
 	}
 
 	cleanup = func() {
 		if c != nil {
-			c.Close()
+			_ = c.Close()
 		}
 		if e != nil {
 			e.Close()
 		}
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 	}
 
 	for i := 0; i < MaxEtcdStartAttempts; i++ {
@@ -87,7 +86,7 @@ func StartEtcd() (e *embed.Etcd, c *clientv3.Client, cleanup func(), err error) 
 	}
 
 	c, err = clientv3.New(clientv3.Config{
-		Endpoints:   []string{e.Config().LCUrls[0].String()},
+		Endpoints:   []string{e.Config().ListenClientUrls[0].String()},
 		DialTimeout: defaultTimeout,
 	})
 	if err != nil {
@@ -101,13 +100,17 @@ func tryStartEtcd(dir string) (*embed.Etcd, error) {
 	if err != nil {
 		return nil, err
 	}
-	p1.Close()
+	if err := p1.Close(); err != nil {
+		return nil, err
+	}
 
 	p2, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		return nil, err
 	}
-	p2.Close()
+	if err := p2.Close(); err != nil {
+		return nil, err
+	}
 
 	// OK to ignore err, it'll error below if parsing fails
 	clientURL, _ := url.Parse("http://" + p1.Addr().String())
@@ -115,10 +118,10 @@ func tryStartEtcd(dir string) (*embed.Etcd, error) {
 
 	cfg := embed.NewConfig()
 	cfg.Dir = dir
-	cfg.LCUrls = []url.URL{*clientURL} // listen client URLS
-	cfg.ACUrls = []url.URL{*clientURL} // advertise client URLS
-	cfg.LPUrls = []url.URL{*peerURL}   // listen peer URLS
-	cfg.APUrls = []url.URL{*peerURL}   // advertise peer URLS
+	cfg.ListenClientUrls = []url.URL{*clientURL}
+	cfg.AdvertiseClientUrls = []url.URL{*clientURL}
+	cfg.ListenPeerUrls = []url.URL{*peerURL}
+	cfg.AdvertisePeerUrls = []url.URL{*peerURL}
 	cfg.InitialCluster = fmt.Sprintf("default=%v", peerURL)
 	cfg.Logger = "zap"
 
