@@ -51,14 +51,8 @@ import (
 	"google.golang.org/grpc"
 	"k8s.io/klog/v2"
 
-	// Register supported storage providers.
-	_ "github.com/google/trillian/storage/cloudspanner"
-	_ "github.com/google/trillian/storage/crdb"
-	_ "github.com/google/trillian/storage/mysql"
-
-	// Load quota providers
-	_ "github.com/google/trillian/quota/crdbqm"
-	_ "github.com/google/trillian/quota/mysqlqm"
+	// Register supported storage and quota providers.
+	"github.com/google/trillian/cmd/internal/provider"
 )
 
 var (
@@ -75,12 +69,12 @@ var (
 	lockDir                  = flag.String("lock_file_path", "/test/multimaster", "etcd lock file directory path")
 	healthzTimeout           = flag.Duration("healthz_timeout", time.Second*5, "Timeout used during healthz checks")
 
-	quotaSystem         = flag.String("quota_system", "mysql", fmt.Sprintf("Quota system to use. One of: %v", quota.Providers()))
+	quotaSystem         = flag.String("quota_system", provider.DefaultQuotaSystem, fmt.Sprintf("Quota system to use. One of: %v", quota.Providers()))
 	quotaIncreaseFactor = flag.Float64("quota_increase_factor", log.QuotaIncreaseFactor,
 		"Increase factor for tokens replenished by sequencing-based quotas (1 means a 1:1 relationship between sequenced leaves and replenished tokens)."+
 			"Only effective for --quota_system=etcd.")
 
-	storageSystem = flag.String("storage_system", "mysql", fmt.Sprintf("Storage system to use. One of: %v", storage.Providers()))
+	storageSystem = flag.String("storage_system", provider.DefaultStorageSystem, fmt.Sprintf("Storage system to use. One of: %v", storage.Providers()))
 
 	preElectionPause   = flag.Duration("pre_election_pause", 1*time.Second, "Maximum time to wait before starting elections")
 	masterHoldInterval = flag.Duration("master_hold_interval", 60*time.Second, "Minimum interval to hold mastership for")
@@ -114,7 +108,11 @@ func main() {
 	if err != nil {
 		klog.Exitf("Failed to get storage provider: %v", err)
 	}
-	defer sp.Close()
+	defer func() {
+		if err := sp.Close(); err != nil {
+			klog.Errorf("Close(): %v", err)
+		}
+	}()
 
 	var client *clientv3.Client
 	if servers := *etcd.Servers; servers != "" {
@@ -124,7 +122,11 @@ func main() {
 		}); err != nil {
 			klog.Exitf("Failed to connect to etcd at %v: %v", servers, err)
 		}
-		defer client.Close()
+		defer func() {
+			if err := client.Close(); err != nil {
+				klog.Errorf("Close(): %v", err)
+			}
+		}()
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -188,7 +190,9 @@ func main() {
 	// Enable CPU profile if requested
 	if *cpuProfile != "" {
 		f := mustCreate(*cpuProfile)
-		pprof.StartCPUProfile(f)
+		if err := pprof.StartCPUProfile(f); err != nil {
+			klog.Exitf("StartCPUProfile(): %v", err)
+		}
 		defer pprof.StopCPUProfile()
 	}
 
@@ -211,7 +215,9 @@ func main() {
 
 	if *memProfile != "" {
 		f := mustCreate(*memProfile)
-		pprof.WriteHeapProfile(f)
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			klog.Exitf("WriteHeapProfile(): %v", err)
+		}
 	}
 
 	// Give things a few seconds to tidy up

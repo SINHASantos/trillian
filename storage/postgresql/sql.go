@@ -1,4 +1,4 @@
-// Copyright 2018 Google LLC. All Rights Reserved.
+// Copyright 2024 Trillian Authors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package storage
+package postgresql
 
 import (
 	"database/sql"
@@ -24,52 +24,46 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// ToMillisSinceEpoch converts a timestamp into milliseconds since epoch
-func ToMillisSinceEpoch(t time.Time) int64 {
+// toMillisSinceEpoch converts a timestamp into milliseconds since epoch
+func toMillisSinceEpoch(t time.Time) int64 {
 	return t.UnixNano() / 1000000
 }
 
-// FromMillisSinceEpoch converts
-func FromMillisSinceEpoch(ts int64) time.Time {
+// fromMillisSinceEpoch converts
+func fromMillisSinceEpoch(ts int64) time.Time {
 	return time.Unix(0, ts*1000000)
 }
 
-// SetNullStringIfValid assigns src to dest if src is Valid.
-func SetNullStringIfValid(src sql.NullString, dest *string) {
+// setNullStringIfValid assigns src to dest if src is Valid.
+func setNullStringIfValid(src sql.NullString, dest *string) {
 	if src.Valid {
 		*dest = src.String
 	}
 }
 
-// Row defines a common interface between sql.Row and sql.Rows(!)
-type Row interface {
+// row defines a common interface between sql.Row and sql.Rows(!)
+type row interface {
 	Scan(dest ...interface{}) error
 }
 
-// ReadTree takes a sql row and returns a tree
-func ReadTree(row Row) (*trillian.Tree, error) {
+// readTree takes a sql row and returns a tree
+func readTree(r row) (*trillian.Tree, error) {
 	tree := &trillian.Tree{}
 
 	// Enums and Datetimes need an extra conversion step
-	var treeState, treeType, hashStrategy, hashAlgorithm, signatureAlgorithm string
+	var treeState, treeType string
 	var createMillis, updateMillis, maxRootDurationMillis int64
 	var displayName, description sql.NullString
-	var privateKey, publicKey []byte
 	var deleted sql.NullBool
 	var deleteMillis sql.NullInt64
-	err := row.Scan(
+	err := r.Scan(
 		&tree.TreeId,
 		&treeState,
 		&treeType,
-		&hashStrategy,
-		&hashAlgorithm,
-		&signatureAlgorithm,
 		&displayName,
 		&description,
 		&createMillis,
 		&updateMillis,
-		&privateKey,
-		&publicKey,
 		&maxRootDurationMillis,
 		&deleted,
 		&deleteMillis,
@@ -78,8 +72,8 @@ func ReadTree(row Row) (*trillian.Tree, error) {
 		return nil, err
 	}
 
-	SetNullStringIfValid(displayName, &tree.DisplayName)
-	SetNullStringIfValid(description, &tree.Description)
+	setNullStringIfValid(displayName, &tree.DisplayName)
+	setNullStringIfValid(description, &tree.Description)
 
 	// Convert all things!
 	if ts, ok := trillian.TreeState_value[treeState]; ok {
@@ -92,25 +86,22 @@ func ReadTree(row Row) (*trillian.Tree, error) {
 	} else {
 		return nil, fmt.Errorf("unknown TreeType: %v", treeType)
 	}
-	if hashStrategy != "RFC6962_SHA256" {
-		return nil, fmt.Errorf("unknown HashStrategy: %v", hashStrategy)
-	}
 
 	// Let's make sure we didn't mismatch any of the casts above
 	ok := tree.TreeState.String() == treeState &&
 		tree.TreeType.String() == treeType
 	if !ok {
 		return nil, fmt.Errorf(
-			"mismatched enum: tree = %v, enums = [%v, %v, %v, %v, %v]",
+			"mismatched enum: tree = %v, enums = [%v, %v]",
 			tree,
-			treeState, treeType, hashStrategy, hashAlgorithm, signatureAlgorithm)
+			treeState, treeType)
 	}
 
-	tree.CreateTime = timestamppb.New(FromMillisSinceEpoch(createMillis))
+	tree.CreateTime = timestamppb.New(fromMillisSinceEpoch(createMillis))
 	if err := tree.CreateTime.CheckValid(); err != nil {
 		return nil, fmt.Errorf("failed to parse create time: %w", err)
 	}
-	tree.UpdateTime = timestamppb.New(FromMillisSinceEpoch(updateMillis))
+	tree.UpdateTime = timestamppb.New(fromMillisSinceEpoch(updateMillis))
 	if err := tree.UpdateTime.CheckValid(); err != nil {
 		return nil, fmt.Errorf("failed to parse update time: %w", err)
 	}
@@ -118,7 +109,7 @@ func ReadTree(row Row) (*trillian.Tree, error) {
 
 	tree.Deleted = deleted.Valid && deleted.Bool
 	if tree.Deleted && deleteMillis.Valid {
-		tree.DeleteTime = timestamppb.New(FromMillisSinceEpoch(deleteMillis.Int64))
+		tree.DeleteTime = timestamppb.New(fromMillisSinceEpoch(deleteMillis.Int64))
 		if err := tree.DeleteTime.CheckValid(); err != nil {
 			return nil, fmt.Errorf("failed to parse delete time: %w", err)
 		}

@@ -1,11 +1,10 @@
 # This Dockerfile builds a base image for Trillan integration tests.
-FROM golang:1.17-buster
+FROM golang:1.23.5-bookworm@sha256:3149bc5043fa58cf127fd8db1fdd4e533b6aed5a40d663d4f4ae43d20386665f
 
 WORKDIR /testbase
 
 ARG GOFLAGS=""
 ENV GOFLAGS=$GOFLAGS
-ENV GO111MODULE=on
 ENV GOPATH /go
 
 RUN apt-get update && apt-get install -y \
@@ -14,7 +13,7 @@ RUN apt-get update && apt-get install -y \
   docker-compose \
   lsof \
   mariadb-client \
-  netcat \
+  netcat-openbsd \
   socat \
   softhsm \
   unzip \
@@ -22,11 +21,10 @@ RUN apt-get update && apt-get install -y \
   xxd
 
 # Install golangci-lint. See docs at: https://golangci-lint.run/usage/install/.
-RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.50.1
+RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.55.1
 
-# Install CockroachDB, see https://www.cockroachlabs.com/docs/v22.1/install-cockroachdb-linux
-RUN curl https://binaries.cockroachdb.com/cockroach-v22.1.11.linux-amd64.tgz | tar -xz && cp -i cockroach-v22.1.11.linux-amd64/cockroach /usr/local/bin/
-
+# Install CockroachDB, see https://www.cockroachlabs.com/docs/v22.2/install-cockroachdb-linux
+RUN curl https://binaries.cockroachdb.com/cockroach-v22.2.7.linux-amd64.tgz | tar -xz && cp -i cockroach-v22.2.7.linux-amd64/cockroach /usr/local/bin/
 
 RUN mkdir protoc && \
     (cd protoc && \

@@ -20,7 +20,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/url"
 	"os"
@@ -164,7 +163,11 @@ func dbAvailable(driver DriverName) bool {
 		log.Printf("sql.Open(): %v", err)
 		return false
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("db.Close(): %v", err)
+		}
+	}()
 	if err := db.Ping(); err != nil {
 		log.Printf("db.Ping(): %v", err)
 		return false
@@ -215,7 +218,9 @@ func newEmptyDB(ctx context.Context, driver DriverName) (*sql.DB, func(context.C
 		return nil, nil, fmt.Errorf("error running statement %q: %v", stmt, err)
 	}
 
-	db.Close()
+	if err := db.Close(); err != nil {
+		return nil, nil, fmt.Errorf("failed to close DB: %v", err)
+	}
 	uri := inf.uriFunc(name)
 	db, err = sql.Open(inf.sqlDriverName, uri)
 	if err != nil {
@@ -223,7 +228,11 @@ func newEmptyDB(ctx context.Context, driver DriverName) (*sql.DB, func(context.C
 	}
 
 	done := func(ctx context.Context) {
-		defer db.Close()
+		defer func() {
+			if err := db.Close(); err != nil {
+				klog.Errorf("db.Close(): %v", err)
+			}
+		}()
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("DROP DATABASE %v", name)); err != nil {
 			klog.Warningf("Failed to drop test database %q: %v", name, err)
 		}
@@ -243,7 +252,7 @@ func NewTrillianDB(ctx context.Context, driver DriverName) (*sql.DB, func(contex
 
 	schema := driverMapping[driver].schema
 
-	sqlBytes, err := ioutil.ReadFile(schema)
+	sqlBytes, err := os.ReadFile(schema)
 	if err != nil {
 		return nil, nil, err
 	}

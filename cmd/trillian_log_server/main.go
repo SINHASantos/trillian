@@ -45,14 +45,8 @@ import (
 	"google.golang.org/grpc"
 	"k8s.io/klog/v2"
 
-	// Register supported storage providers.
-	_ "github.com/google/trillian/storage/cloudspanner"
-	_ "github.com/google/trillian/storage/crdb"
-	_ "github.com/google/trillian/storage/mysql"
-
-	// Load quota providers
-	_ "github.com/google/trillian/quota/crdbqm"
-	_ "github.com/google/trillian/quota/mysqlqm"
+	// Register supported storage and quota providers.
+	"github.com/google/trillian/cmd/internal/provider"
 )
 
 var (
@@ -64,10 +58,10 @@ var (
 	etcdService     = flag.String("etcd_service", "trillian-logserver", "Service name to announce ourselves under")
 	etcdHTTPService = flag.String("etcd_http_service", "trillian-logserver-http", "Service name to announce our HTTP endpoint under")
 
-	quotaSystem = flag.String("quota_system", "mysql", fmt.Sprintf("Quota system to use. One of: %v", quota.Providers()))
+	quotaSystem = flag.String("quota_system", provider.DefaultQuotaSystem, fmt.Sprintf("Quota system to use. One of: %v", quota.Providers()))
 	quotaDryRun = flag.Bool("quota_dry_run", false, "If true no requests are blocked due to lack of tokens")
 
-	storageSystem = flag.String("storage_system", "mysql", fmt.Sprintf("Storage system to use. One of: %v", storage.Providers()))
+	storageSystem = flag.String("storage_system", provider.DefaultStorageSystem, fmt.Sprintf("Storage system to use. One of: %v", storage.Providers()))
 
 	treeGCEnabled            = flag.Bool("tree_gc", true, "If true, tree garbage collection (hard-deletion) is periodically performed")
 	treeDeleteThreshold      = flag.Duration("tree_delete_threshold", serverutil.DefaultTreeDeleteThreshold, "Minimum period a tree has to remain deleted before being hard-deleted")
@@ -117,7 +111,11 @@ func main() {
 	if err != nil {
 		klog.Exitf("Failed to get storage provider: %v", err)
 	}
-	defer sp.Close()
+	defer func() {
+		if err := sp.Close(); err != nil {
+			klog.Errorf("Close(): %v", err)
+		}
+	}()
 
 	var client *clientv3.Client
 	if servers := *etcd.Servers; servers != "" {
@@ -127,7 +125,11 @@ func main() {
 		}); err != nil {
 			klog.Exitf("Failed to connect to etcd at %v: %v", servers, err)
 		}
-		defer client.Close()
+		defer func() {
+			if err := client.Close(); err != nil {
+				klog.Errorf("Close(): %v", err)
+			}
+		}()
 	}
 
 	// Announce our endpoints to etcd if so configured.
@@ -154,7 +156,9 @@ func main() {
 	// Enable CPU profile if requested.
 	if *cpuProfile != "" {
 		f := mustCreate(*cpuProfile)
-		pprof.StartCPUProfile(f)
+		if err := pprof.StartCPUProfile(f); err != nil {
+			klog.Exitf("StartCPUProfile(): %v", err)
+		}
 		defer pprof.StopCPUProfile()
 	}
 
@@ -196,7 +200,9 @@ func main() {
 
 	if *memProfile != "" {
 		f := mustCreate(*memProfile)
-		pprof.WriteHeapProfile(f)
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			klog.Exitf("WriteHeapProfile(): %v", err)
+		}
 	}
 }
 

@@ -117,7 +117,11 @@ func (*logTests) TestSnapshot(ctx context.Context, t *testing.T, s storage.LogSt
 			tx, err := s.SnapshotForTree(ctx, test.tree)
 
 			if err == storage.ErrTreeNeedsInit {
-				defer tx.Close()
+				defer func() {
+					if err := tx.Close(); err != nil {
+						t.Errorf("Close(): %v", err)
+					}
+				}()
 			}
 
 			if hasErr := err != nil; hasErr != test.wantErr {
@@ -125,7 +129,9 @@ func (*logTests) TestSnapshot(ctx context.Context, t *testing.T, s storage.LogSt
 			} else if hasErr {
 				return
 			}
-			defer tx.Close()
+			defer func() {
+				_ = tx.Close()
+			}()
 
 			_, err = tx.LatestSignedLogRoot(ctx)
 			if err != nil {
@@ -140,23 +146,22 @@ func (*logTests) TestSnapshot(ctx context.Context, t *testing.T, s storage.LogSt
 
 func (*logTests) TestReadWriteTransaction(ctx context.Context, t *testing.T, s storage.LogStorage, as storage.AdminStorage) {
 	activeLog := mustCreateTree(ctx, t, as, storageto.LogTree)
-	mustSignAndStoreLogRoot(ctx, t, s, activeLog, &types.LogRootV1{RootHash: []byte{0}})
 
 	tests := []struct {
 		desc          string
-		tree          *trillian.Tree
+		doBefore      func()
 		wantNeedsInit bool
 		wantErr       bool
 		wantLogRoot   []byte
 	}{
 		{
 			desc:          "uninitializedBegin",
-			tree:          logTree(-1),
+			doBefore:      func() {},
 			wantNeedsInit: true,
 		},
 		{
-			desc: "activeLogBegin",
-			tree: activeLog,
+			desc:     "activeLogBegin",
+			doBefore: func() { mustSignAndStoreLogRoot(ctx, t, s, activeLog, &types.LogRootV1{RootHash: []byte{0}}) },
 			wantLogRoot: func() []byte {
 				b, err := (&types.LogRootV1{RootHash: []byte{0}}).MarshalBinary()
 				if err != nil {
@@ -169,7 +174,8 @@ func (*logTests) TestReadWriteTransaction(ctx context.Context, t *testing.T, s s
 
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
-			err := s.ReadWriteTransaction(ctx, test.tree, func(ctx context.Context, tx storage.LogTreeTX) error {
+			test.doBefore()
+			err := s.ReadWriteTransaction(ctx, activeLog, func(ctx context.Context, tx storage.LogTreeTX) error {
 				root, err := tx.LatestSignedLogRoot(ctx)
 				if err != nil && !(err == storage.ErrTreeNeedsInit && test.wantNeedsInit) {
 					t.Fatalf("%v: LatestSignedLogRoot() returned err = %v", test.desc, err)

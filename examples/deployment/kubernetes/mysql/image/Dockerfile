@@ -13,13 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ubuntu:trusty
+FROM ubuntu:jammy@sha256:0e5e4a57c2499249aafc3b40fcd541e9a456aab7296681a3994d631587203f97
+
+# Patch the OS-level packages and remove unneeded dependencies.
+RUN apt-get update \
+    && apt-get -y upgrade \
+    && apt-get -y autoremove \
+    && rm -rf /var/lib/apt/lists/*
 
 # add our user and group first to make sure their IDs get assigned
 # consistently, regardless of whatever dependencies get added
 RUN groupadd -r mysql && useradd -r -g mysql mysql
 
-ENV MYSQL_VERSION 5.7
+ENV MYSQL_VERSION 8.0
 ENV TERM linux
 
 # Install perl.
@@ -29,8 +35,8 @@ RUN rm -rf /var/lib/apt/lists/*
 
 RUN apt-key adv --keyserver keys.gnupg.net --recv-keys 1C4CBDCDCD2EFD2A 9334A25F8507EFA5
 
-RUN echo "deb http://repo.percona.com/apt trusty main" > /etc/apt/sources.list.d/percona.list
-RUN echo "deb-src http://repo.percona.com/apt trusty main" >> /etc/apt/sources.list.d/percona.list
+RUN echo "deb http://repo.percona.com/apt jammy main" > /etc/apt/sources.list.d/percona.list
+RUN echo "deb-src http://repo.percona.com/apt jammy main" >> /etc/apt/sources.list.d/percona.list
 
 RUN { \
                 echo percona-server-server-${MYSQL_VERSION} percona-server-server/root_password password ''; \

@@ -43,7 +43,7 @@ func (db *testDBHandle) GetDB() *sql.DB {
 func TestMain(m *testing.M) {
 	flag.Parse()
 
-	ts, err := testserver.NewTestServer()
+	ts, err := testserver.NewTestServer(testserver.CustomVersionOpt("v22.2.7"))
 	if err != nil {
 		klog.Exitf("Failed to start test server: %v", err)
 	}
@@ -55,7 +55,9 @@ func TestMain(m *testing.M) {
 	dburl.Path = "/"
 
 	// Set the environment variable for the test server
-	os.Setenv(testdb.CockroachDBURIEnv, dburl.String())
+	if err := os.Setenv(testdb.CockroachDBURIEnv, dburl.String()); err != nil {
+		klog.Exitf("Failed to SetEnv CockroachDBURIEnv: %v", err)
+	}
 
 	if !testdb.CockroachDBAvailable() {
 		klog.Errorf("CockroachDB not available, skipping all CockroachDB storage tests")

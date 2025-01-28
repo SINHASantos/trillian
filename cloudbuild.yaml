@@ -11,7 +11,6 @@ options:
   - name: go-modules
     path: /go
   env:
-    - GO111MODULE=on
     - GOPATH=/go
     - GOLANG_PROTOBUF_REGISTRATION_CONFLICT=ignore # Temporary work-around v1.proto already registered error.
     - DOCKER_CLIENT_TIMEOUT=120
@@ -48,14 +47,15 @@ steps:
   name: 'gcr.io/${PROJECT_ID}/trillian_testbase'
   entrypoint: ./integration/cloudbuild/prepare.sh
 
-# Run lint and porcelain checks, make sure the diff is empty and no files need
-# to be updated. This includes gofmt, golangci-linter, go mod tidy, go mod
-# generate and a few more.
-- id: lint
+# Run porcelain checks, make sure the diff is empty and no files need
+# to be updated. This includes gofmt, go mod tidy, go mod generate
+# and a few more.
+- id: check
   name: 'gcr.io/${PROJECT_ID}/trillian_testbase'
   entrypoint: ./scripts/presubmit.sh
   args:
     - --no-build
+    - --no-linters
     - --fix
     - --no-mod-tidy
     - --empty-diff
@@ -73,7 +73,7 @@ steps:
     - GOFLAGS=-race
     - GO_TEST_TIMEOUT=20m
   waitFor:
-    - lint
+    - check
 
 # Codecov
 - id: codecov
@@ -88,7 +88,7 @@ steps:
     - GO_TEST_TIMEOUT=20m
     - CODECOV_TOKEN=${_CODECOV_TOKEN}
   waitFor:
-    - lint
+    - check
 
 # Presubmit (Batched queue)
 - id: presubmit_batched
@@ -101,7 +101,7 @@ steps:
     - GOFLAGS=-race --tags=batched_queue
     - GO_TEST_TIMEOUT=20m
   waitFor:
-    - lint
+    - check
 
 # Presubmit (PKCS11)
 - id: presubmit_pkcs11
@@ -114,7 +114,7 @@ steps:
     - GOFLAGS=-race --tags=pkcs11
     - GO_TEST_TIMEOUT=20m
   waitFor:
-    - lint
+    - check
 
 # Try to spread the load a bit, we'll wait for all the presubmit.* steps
 # to finish before starting the integration.* ones.
@@ -182,6 +182,6 @@ steps:
   entrypoint: ./integration/cloudbuild/run_integration.sh
   env:
     - GO_TEST_TIMEOUT=20m
-    - MYSQLD_IMAGE=mariadb:10.3
+    - MYSQLD_IMAGE=mariadb:11.1
   waitFor:
     - presubmits_done

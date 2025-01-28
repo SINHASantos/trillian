@@ -15,18 +15,23 @@
 package mysql
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/gob"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/google/trillian"
 	"github.com/google/trillian/storage"
+	"github.com/google/trillian/storage/mysql/mysqlpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -46,8 +51,8 @@ const (
 			Description,
 			CreateTimeMillis,
 			UpdateTimeMillis,
-			PrivateKey,
-			PublicKey,
+			PrivateKey, -- Unused
+			PublicKey, -- Used to store StorageSettings
 			MaxRootDurationMillis,
 			Deleted,
 			DeleteTimeMillis
@@ -61,7 +66,7 @@ const (
 )
 
 // NewAdminStorage returns a MySQL storage.AdminStorage implementation backed by DB.
-func NewAdminStorage(db *sql.DB) storage.AdminStorage {
+func NewAdminStorage(db *sql.DB) *mysqlAdminStorage {
 	return &mysqlAdminStorage{db}
 }
 
@@ -87,7 +92,11 @@ func (s *mysqlAdminStorage) ReadWriteTransaction(ctx context.Context, f storage.
 	if err != nil {
 		return err
 	}
-	defer tx.Close()
+	defer func() {
+		if err := tx.Close(); err != nil {
+			klog.Errorf("tx.Close(): %v", err)
+		}
+	}()
 	if err := f(ctx, tx); err != nil {
 		return err
 	}
@@ -131,10 +140,14 @@ func (t *adminTX) GetTree(ctx context.Context, treeID int64) (*trillian.Tree, er
 	if err != nil {
 		return nil, err
 	}
-	defer stmt.Close()
+	defer func() {
+		if err := stmt.Close(); err != nil {
+			klog.Errorf("stmt.Close(): %v", err)
+		}
+	}()
 
 	// GetTree is an entry point for most RPCs, let's provide somewhat nicer error messages.
-	tree, err := storage.ReadTree(stmt.QueryRowContext(ctx, treeID))
+	tree, err := readTree(stmt.QueryRowContext(ctx, treeID))
 	switch {
 	case err == sql.ErrNoRows:
 		// ErrNoRows doesn't provide useful information, so we don't forward it.
@@ -157,15 +170,23 @@ func (t *adminTX) ListTrees(ctx context.Context, includeDeleted bool) ([]*trilli
 	if err != nil {
 		return nil, err
 	}
-	defer stmt.Close()
+	defer func() {
+		if err := stmt.Close(); err != nil {
+			klog.Errorf("stmt.Close(): %v", err)
+		}
+	}()
 	rows, err := stmt.QueryContext(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			klog.Errorf("rows.Close(): %v", err)
+		}
+	}()
 	trees := []*trillian.Tree{}
 	for rows.Next() {
-		tree, err := storage.ReadTree(rows)
+		tree, err := readTree(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -188,8 +209,8 @@ func (t *adminTX) CreateTree(ctx context.Context, tree *trillian.Tree) (*trillia
 	}
 
 	// Use the time truncated-to-millis throughout, as that's what's stored.
-	nowMillis := storage.ToMillisSinceEpoch(time.Now())
-	now := storage.FromMillisSinceEpoch(nowMillis)
+	nowMillis := toMillisSinceEpoch(time.Now())
+	now := fromMillisSinceEpoch(nowMillis)
 
 	newTree := proto.Clone(tree).(*trillian.Tree)
 	newTree.TreeId = id
@@ -206,6 +227,39 @@ func (t *adminTX) CreateTree(ctx context.Context, tree *trillian.Tree) (*trillia
 	}
 	rootDuration := newTree.MaxRootDuration.AsDuration()
 
+	// When creating a new tree we automatically add StorageSettings to allow us to
+	// determine that this tree can support newer storage features. When reading
+	// trees that do not have this StorageSettings populated, it must be assumed that
+	// the tree was created with the oldest settings.
+	// The gist of this code is super simple: create a new StorageSettings with the most
+	// modern defaults if the created tree does not have one, and then create a struct that
+	// represents this to store in the DB. Unfortunately because this involves anypb, struct
+	// copies, marshalling, and proper error handling this turns into a scary amount of code.
+	if tree.StorageSettings != nil {
+		newTree.StorageSettings = proto.Clone(tree.StorageSettings).(*anypb.Any)
+	} else {
+		o := &mysqlpb.StorageOptions{
+			SubtreeRevisions: false, // Default behaviour for new trees is to skip writing subtree revisions.
+		}
+		a, err := anypb.New(o)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create new StorageOptions: %v", err)
+		}
+		newTree.StorageSettings = a
+	}
+	o := &mysqlpb.StorageOptions{}
+	if err := anypb.UnmarshalTo(newTree.StorageSettings, o, proto.UnmarshalOptions{}); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal StorageOptions: %v", err)
+	}
+	ss := storageSettings{
+		Revisioned: o.SubtreeRevisions,
+	}
+	buff := &bytes.Buffer{}
+	enc := gob.NewEncoder(buff)
+	if err := enc.Encode(ss); err != nil {
+		return nil, fmt.Errorf("failed to encode storageSettings: %v", err)
+	}
+
 	insertTreeStmt, err := t.tx.PrepareContext(
 		ctx,
 		`INSERT INTO Trees(
@@ -219,14 +273,18 @@ func (t *adminTX) CreateTree(ctx context.Context, tree *trillian.Tree) (*trillia
 			Description,
 			CreateTimeMillis,
 			UpdateTimeMillis,
-			PrivateKey,
-			PublicKey,
+			PrivateKey, -- Unused
+			PublicKey, -- Used to store StorageSettings
 			MaxRootDurationMillis)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return nil, err
 	}
-	defer insertTreeStmt.Close()
+	defer func() {
+		if err := insertTreeStmt.Close(); err != nil {
+			klog.Errorf("insertTreeStmt.Close(): %v", err)
+		}
+	}()
 
 	_, err = insertTreeStmt.ExecContext(
 		ctx,
@@ -240,8 +298,8 @@ func (t *adminTX) CreateTree(ctx context.Context, tree *trillian.Tree) (*trillia
 		newTree.Description,
 		nowMillis,
 		nowMillis,
-		[]byte{}, // Unused, filling in for backward compatibility.
-		[]byte{}, // Unused, filling in for backward compatibility.
+		[]byte{},     // PrivateKey: Unused, filling in for backward compatibility.
+		buff.Bytes(), // Using the otherwise unused PublicKey for storing StorageSettings.
 		rootDuration/time.Millisecond,
 	)
 	if err != nil {
@@ -268,7 +326,11 @@ func (t *adminTX) CreateTree(ctx context.Context, tree *trillian.Tree) (*trillia
 	if err != nil {
 		return nil, err
 	}
-	defer insertControlStmt.Close()
+	defer func() {
+		if err := insertControlStmt.Close(); err != nil {
+			klog.Errorf("insertControlStmt.Close(): %v", err)
+		}
+	}()
 	_, err = insertControlStmt.ExecContext(
 		ctx,
 		newTree.TreeId,
@@ -302,8 +364,8 @@ func (t *adminTX) UpdateTree(ctx context.Context, treeID int64, updateFunc func(
 	// ensure all entries in SequencedLeafData are integrated.
 
 	// Use the time truncated-to-millis throughout, as that's what's stored.
-	nowMillis := storage.ToMillisSinceEpoch(time.Now())
-	now := storage.FromMillisSinceEpoch(nowMillis)
+	nowMillis := toMillisSinceEpoch(time.Now())
+	now := fromMillisSinceEpoch(nowMillis)
 	tree.UpdateTime = timestamppb.New(now)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build update time: %v", err)
@@ -317,7 +379,11 @@ func (t *adminTX) UpdateTree(ctx context.Context, treeID int64, updateFunc func(
 	if err != nil {
 		return nil, err
 	}
-	defer stmt.Close()
+	defer func() {
+		if err := stmt.Close(); err != nil {
+			klog.Errorf("stmt.Close(): %v", err)
+		}
+	}()
 
 	if _, err = stmt.ExecContext(
 		ctx,
@@ -327,7 +393,10 @@ func (t *adminTX) UpdateTree(ctx context.Context, treeID int64, updateFunc func(
 		tree.Description,
 		nowMillis,
 		rootDuration/time.Millisecond,
-		[]byte{}, // Unused, filling in for backward compatibility.
+		[]byte{}, // PrivateKey: Unused, filling in for backward compatibility.
+		// PublicKey should not be updated with any storageSettings here without
+		// a lot of thought put into it. At the moment storageSettings are inferred
+		// when reading the tree, even if no value is stored in the database.
 		tree.TreeId); err != nil {
 		return nil, err
 	}
@@ -336,7 +405,7 @@ func (t *adminTX) UpdateTree(ctx context.Context, treeID int64, updateFunc func(
 }
 
 func (t *adminTX) SoftDeleteTree(ctx context.Context, treeID int64) (*trillian.Tree, error) {
-	return t.updateDeleted(ctx, treeID, true /* deleted */, storage.ToMillisSinceEpoch(time.Now()) /* deleteTimeMillis */)
+	return t.updateDeleted(ctx, treeID, true /* deleted */, toMillisSinceEpoch(time.Now()) /* deleteTimeMillis */)
 }
 
 func (t *adminTX) UndeleteTree(ctx context.Context, treeID int64) (*trillian.Tree, error) {
@@ -390,8 +459,21 @@ func validateDeleted(ctx context.Context, tx *sql.Tx, treeID int64, wantDeleted 
 }
 
 func validateStorageSettings(tree *trillian.Tree) error {
-	if tree.StorageSettings != nil {
-		return fmt.Errorf("storage_settings not supported, but got %v", tree.StorageSettings)
+	if tree.StorageSettings.MessageIs(&mysqlpb.StorageOptions{}) {
+		return nil
 	}
-	return nil
+	if tree.StorageSettings == nil {
+		// No storage settings is OK, we'll just use the defaults for new trees
+		return nil
+	}
+	return fmt.Errorf("storage_settings must be nil or mysqlpb.StorageOptions, but got %v", tree.StorageSettings)
+}
+
+// storageSettings allows us to persist storage settings to the DB.
+// It is a tempting trap to use protos for this, but the way they encode
+// makes it impossible to tell the difference between no value ever written
+// and a value that was written with the default values for each field.
+// Using an explicit struct and gob encoding allows us to tell the difference.
+type storageSettings struct {
+	Revisioned bool
 }

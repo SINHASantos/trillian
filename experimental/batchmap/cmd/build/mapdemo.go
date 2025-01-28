@@ -89,6 +89,7 @@ func main() {
 	if err := beamx.Run(context.Background(), p); err != nil {
 		klog.Fatalf("Failed to execute job: %v", err)
 	}
+	klog.Infof("Pipeline completed successfully! Output data is at %s", output)
 }
 
 // mapEntryFn is a Beam ParDo function that generates a key/value from an int64 input.
@@ -130,7 +131,12 @@ func (fn *writeTileFn) ProcessElement(ctx context.Context, t *batchmap.Tile) err
 	if err != nil {
 		return err
 	}
-	defer w.Close()
+
+	defer func() {
+		if err := w.Close(); err != nil {
+			klog.Errorf("Close(): %v", err)
+		}
+	}()
 
 	bs, err := json.Marshal(t)
 	if err != nil {
